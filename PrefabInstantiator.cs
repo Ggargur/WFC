@@ -12,7 +12,13 @@ namespace WaveFunction
                 InstantiatePrefab(cell);
             }
         }
-        
+
+        public override void ClearCells()
+        {
+            var allCells = FindObjectsByType<CellBehaviour>(FindObjectsSortMode.None);
+            foreach (var cell in allCells) DestroyImmediate(cell.gameObject);
+        }
+
         private void InstantiatePrefab(Cell cell)
         {
             var turns = cell.AmountOfTurns;

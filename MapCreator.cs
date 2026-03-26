@@ -245,8 +245,8 @@ namespace WaveFunction
         public void Clear()
         {
             _instancedCells.Clear();
-            var allCells = FindObjectsByType<CellBehaviour>(FindObjectsSortMode.None);
-            foreach (var cell in allCells) DestroyImmediate(cell.gameObject);
+            if(TryGetComponent(out  Instantiator instantiator))
+                instantiator.ClearCells();
         }
 
         private int GetIndex(int x, int y, int z)

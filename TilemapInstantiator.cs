@@ -17,6 +17,11 @@ namespace WaveFunction
             }
         }
 
+        public override void ClearCells()
+        {
+            tilemap.ClearAllTiles();
+        }
+
         private void InstantiateTile(Cell cell)
         {
             var collapsedType = cell.CollapsedType;
