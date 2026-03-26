@@ -1,11 +1,9 @@
 using System;
-using System.Collections;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Linq;
 using System.Threading.Tasks;
 using UnityEngine;
-using UnityEngine.Serialization;
 using Debug = UnityEngine.Debug;
 
 namespace WaveFunction
@@ -20,6 +18,10 @@ namespace WaveFunction
         public int seed = 111;
         public bool useRandomizedSeed;
         public Vector3Int matrixSize = Vector3Int.one;
+
+        [Header("Chunking")] public Vector3Int chunkSize;
+        public int maxChunkRetries = 10;
+
         private readonly Stopwatch _currentStopWatch = new();
         private readonly Stack<Cell> _instancedCells = new();
         private bool IsDone => InstancedCells.Count == _grid.Length;
@@ -87,26 +89,22 @@ namespace WaveFunction
             forcedOption.Uncollapse();
         }
 
-        private List<Cell> GetNextOptions()
+        private IEnumerable<Cell> GetNextOptions()
         {
             var allOptions = _grid.Where(x => x.IsCollapsable).ToList();
             if (!allOptions.Any())
                 return allOptions;
 
             var min = allOptions.Min(x => x.Entropy);
-            var options = allOptions.Where(x => Mathf.Approximately(x.Entropy, min)).ToList();
-            return options;
+            return allOptions.Where(x => Mathf.Approximately(x.Entropy, min));
         }
 
         [ContextMenu("Create Map")]
         public void Create()
         {
-            TaskScheduler.UnobservedTaskException += (sender, e) =>
-            {
-                Debug.LogException(e.Exception);
-            };
+            TaskScheduler.UnobservedTaskException += (sender, e) => { Debug.LogException(e.Exception); };
             Clear();
-            
+
             CreateRoutine().ContinueWith(t =>
             {
                 if (t.IsFaulted)
@@ -114,14 +112,13 @@ namespace WaveFunction
                     Debug.LogException(t.Exception);
                 }
             }, TaskScheduler.FromCurrentSynchronizationContext());
-
         }
 
         private async Task CreateRoutine()
         {
             _currentStopWatch.Start();
-            FillGrid();
-            
+            _grid = GetGrid().ToArray();
+
             await CollapseAll();
 
             print($"Elapsed time: {_currentStopWatch.Elapsed}");
@@ -131,39 +128,93 @@ namespace WaveFunction
 
         private async Task CollapseAll()
         {
-            var first = SelectNext();
-            Collapse(first);
+            var chunks = GetChunks();
 
-            try
+            foreach (var chunk in chunks)
             {
-                await Propagate();
-            }
-            finally
-            {
-                if (TryGetComponent(out Instantiator instantiator))
+                bool success = false;
+
+                for (int attempt = 0; attempt < maxChunkRetries; attempt++)
                 {
-                    instantiator.InstantiateCells(InstancedCells);
+                    ResetChunk(chunk);
+
+                    try
+                    {
+                        await SolveChunk(chunk);
+                        success = true;
+                        break;
+                    }
+                    catch
+                    {
+                        // retry
+                    }
                 }
+
+                if (!success)
+                    throw new UnfortunateSeedException($"Chunk {chunk} failed.");
+            }
+
+            if (TryGetComponent(out Instantiator instantiator))
+            {
+                instantiator.InstantiateCells(_grid.Where(c => c.IsCollapsed).ToList());
             }
         }
 
-        private async Task Propagate()
+        private void ResetChunk(List<Cell> chunk)
         {
-            int iteration;
-            for (iteration = 0; iteration < maxIterations; iteration++)
+            foreach (var cell in chunk)
             {
-                if (IsDone)
-                    break;
+                cell.Uncollapse();
+            }
+
+            _instancedCells.Clear();
+        }
+
+
+        private IEnumerable<List<Cell>> GetChunks()
+        {
+            List<List<Cell>> chunks = new();
+
+            for (int x = 0; x < matrixSize.x; x += chunkSize.x)
+            for (int y = 0; y < matrixSize.y; y += chunkSize.y)
+            for (int z = 0; z < matrixSize.z; z += chunkSize.z)
+            {
+                List<Cell> chunk = new();
+
+                for (int i = 0; i < chunkSize.x; i++)
+                for (int j = 0; j < chunkSize.y; j++)
+                for (int k = 0; k < chunkSize.z; k++)
+                {
+                    var pos = new Vector3Int(x + i, y + j, z + k);
+
+                    if (IsInBounds(pos))
+                        chunk.Add(_grid[GetIndex(pos)]);
+                }
+
+                chunks.Add(chunk);
+            }
+
+            return chunks;
+        }
+
+        private async Task SolveChunk(List<Cell> chunk)
+        {
+            var iteration = 0;
+
+            while (chunk.Any(c => !c.IsCollapsed))
+            {
+                if (iteration++ > maxIterations)
+                    throw new UnfortunateSeedException();
 
                 var next = SelectNext();
 
                 Collapse(next);
-                Debug.Log($"Iteration {iteration}, Testing: {next.Index}, Entropy: {next.Entropy}, Progress: {_grid.Count(c => c.IsCollapsed) / (float)_grid.Length}");
+
+                if (chunk.Any(c => !c.IsCollapsable && !c.IsCollapsed))
+                    throw new UnfortunateSeedException();
+
                 await Task.Yield();
             }
-
-            if (iteration >= maxIterations)
-                throw new UnfortunateSeedException("Couldn't finish grid on available time.");
         }
 
         private void Collapse(Cell next)
@@ -179,15 +230,14 @@ namespace WaveFunction
                 PopStack();
         }
 
-        private void FillGrid()
+        private IEnumerable<Cell> GetGrid()
         {
             _grid = new Cell[GridMagnitude];
             for (var i = 0; i < matrixSize.x; i++)
             for (var j = 0; j < matrixSize.y; j++)
             for (var k = 0; k < matrixSize.z; k++)
             {
-                var index = GetIndex(i, j, k);
-                _grid[index] = new Cell(new Vector3Int(i, j, k), _systemRandom);
+                yield return new Cell(new Vector3Int(i, j, k), _systemRandom);
             }
         }
 
