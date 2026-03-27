@@ -24,6 +24,7 @@ namespace WaveFunction
 
         private readonly Stopwatch _currentStopWatch = new();
         private readonly Stack<Cell> _instancedCells = new();
+        private Stack<List<Cell>> _chunkStack = new();
         private bool IsDone => InstancedCells.Count == _grid.Length;
         [SerializeField] private int maxIterations = 1000;
         private Cell[] _grid;
@@ -72,15 +73,10 @@ namespace WaveFunction
                    neighborPos.z >= 0 && neighborPos.z < matrixSize.z;
         }
 
-        private Cell SelectNext()
+        private Cell SelectNext(IEnumerable<Cell> chunk)
         {
-            var options = GetNextOptions();
-            if (options.Any()) return options.GetRandom(_systemRandom);
-
-            if (!InstancedCells.Any()) return null;
-
-            PopStack();
-            return SelectNext();
+            var options = GetNextOptions(chunk);
+            return options.Any() ? options.GetRandom(_systemRandom) : null;
         }
 
         private void PopStack()
@@ -89,9 +85,9 @@ namespace WaveFunction
             forcedOption.Uncollapse();
         }
 
-        private IEnumerable<Cell> GetNextOptions()
+        private static IEnumerable<Cell> GetNextOptions(IEnumerable<Cell> chunk)
         {
-            var allOptions = _grid.Where(x => x.IsCollapsable).ToList();
+            var allOptions = chunk.Where(x => x.IsCollapsable).ToList();
             if (!allOptions.Any())
                 return allOptions;
 
@@ -128,30 +124,11 @@ namespace WaveFunction
 
         private async Task CollapseAll()
         {
-            var chunks = GetChunks();
+            var chunks = GetChunks().ToList();
 
             foreach (var chunk in chunks)
             {
-                bool success = false;
-
-                for (int attempt = 0; attempt < maxChunkRetries; attempt++)
-                {
-                    ResetChunk(chunk);
-
-                    try
-                    {
-                        await SolveChunk(chunk);
-                        success = true;
-                        break;
-                    }
-                    catch
-                    {
-                        // retry
-                    }
-                }
-
-                if (!success)
-                    throw new UnfortunateSeedException($"Chunk {chunk} failed.");
+                await SolveChunk(chunk);
             }
 
             if (TryGetComponent(out Instantiator instantiator))
@@ -160,16 +137,14 @@ namespace WaveFunction
             }
         }
 
+
         private void ResetChunk(List<Cell> chunk)
         {
             foreach (var cell in chunk)
             {
                 cell.Uncollapse();
             }
-
-            _instancedCells.Clear();
         }
-
 
         private IEnumerable<List<Cell>> GetChunks()
         {
@@ -199,36 +174,45 @@ namespace WaveFunction
 
         private async Task SolveChunk(List<Cell> chunk)
         {
-            var iteration = 0;
+            int iteration = 0;
 
             while (chunk.Any(c => !c.IsCollapsed))
             {
                 if (iteration++ > maxIterations)
                     throw new UnfortunateSeedException();
 
-                var next = SelectNext();
+                var next = SelectNext(chunk);
 
                 Collapse(next);
-
-                if (chunk.Any(c => !c.IsCollapsable && !c.IsCollapsed))
-                    throw new UnfortunateSeedException();
 
                 await Task.Yield();
             }
         }
 
+
         private void Collapse(Cell next)
         {
-            if (next == null)
-                throw new UnfortunateSeedException();
+            while (true)
+            {
+                if (next == null)
+                    throw new UnfortunateSeedException();
 
-            if (!next.Collapse()) return;
+                if (next.Collapse())
+                {
+                    _instancedCells.Push(next);
 
-            _instancedCells.Push(next);
+                    if (!HasCreatedMistake)
+                        return;
+                }
+                
+                if (_instancedCells.Count == 0)
+                    throw new UnfortunateSeedException();
 
-            if (HasCreatedMistake)
-                PopStack();
+                next = _instancedCells.Pop();
+                next.Uncollapse();
+            }
         }
+
 
         private IEnumerable<Cell> GetGrid()
         {
@@ -245,7 +229,7 @@ namespace WaveFunction
         public void Clear()
         {
             _instancedCells.Clear();
-            if(TryGetComponent(out  Instantiator instantiator))
+            if (TryGetComponent(out Instantiator instantiator))
                 instantiator.ClearCells();
         }
 
