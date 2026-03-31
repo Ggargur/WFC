@@ -90,9 +90,9 @@ namespace WaveFunction
                 if (!weights.Any())
                     return float.PositiveInfinity;
 
-                var avg = weights.Average();
-                var diffs = weights.Sum(n => (n - avg) * (n - avg));
-                return diffs / weights.Count;
+                var totalWeight = weights.Sum();
+
+                return weights.Select(weight => weight / totalWeight).Where(probability => probability > 0).Aggregate(0f, (current, probability) => current - probability * Mathf.Log(probability, 2));
             }
         }
 
